@@ -1,0 +1,31 @@
+mqtt:
+  enabled: false
+
+detectors:
+  cpu1:
+    type: cpu
+
+cameras:
+  entrada:
+    ffmpeg:
+      inputs:
+        - path: 
+            rtsp://admin:Laer0237@192.168.1.108:554/cam/realmonitor?channel=1&subtype=1
+          roles:
+            - detect
+            - record
+
+    detect:
+      width: 1280
+      height: 720
+      fps: 5
+
+    objects:
+      track:
+        - person
+        - car
+
+    motion:
+      threshold: 25
+      contour_area: 1000
+version: 0.17-0

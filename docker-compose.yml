@@ -1,0 +1,100 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────────────────────
+# Stack: Frigate + CodeProject.AI + Mosquitto
+#
+# Requisitos previos:
+#   - Docker + Docker Compose v2
+#   - Para GPU NVIDIA: nvidia-container-toolkit instalado
+#   - Para Coral TPU: dispositivo montado en /dev/bus/usb
+#
+# Uso:
+#   docker compose up -d
+# ─────────────────────────────────────────────────────────────
+
+services:
+
+  # ── MQTT Broker ─────────────────────────────────────────────
+  mosquitto:
+    image: eclipse-mosquitto:latest
+    container_name: mosquitto
+    restart: unless-stopped
+    ports:
+      - "1884:1883"    # MQTT
+      - "9001:9001"     # WebSocket (opcional, para dashboards web)
+    volumes:
+      - ./mosquitto/config/mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - ./mosquitto/data:/mosquitto/data
+      - ./mosquitto/log:/mosquitto/log
+    networks:
+      - vms-net
+
+  # ── CodeProject.AI ──────────────────────────────────────────
+  codeproject-ai:
+    image: codeproject/ai-server:gpu   # Cambiar a :cpu si no tenés GPU NVIDIA
+    container_name: codeproject-ai
+    restart: unless-stopped
+    ports:
+      - "32168:32168"   # API REST (http://localhost:32168)
+    volumes:
+      - codeproject-data:/etc/codeproject/ai   # modelos y configuración
+    environment:
+      - CPAI_PORT=32168
+      # Módulos a habilitar (se descargan automáticamente al primer inicio)
+      # Otros disponibles: ObjectDetectionYOLOv8, SceneClassification, etc.
+      - CPAI_MODULES_ALPR=true
+      - CPAI_MODULES_FACEPROCESSING=true
+      - CPAI_MODULES_OBJECTDETECTIONYOLOV5=true
+    # GPU NVIDIA — comentar si no tenés GPU
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    networks:
+      - vms-net
+
+  # ── Frigate NVR ─────────────────────────────────────────────
+  frigate:
+    image: ghcr.io/blakeblackshear/frigate:stable
+    container_name: frigate
+    restart: unless-stopped
+    privileged: true          # necesario para acceso a dispositivos hardware
+    shm_size: "256mb"         # aumentar si tenés muchas cámaras (64mb por cámara aprox)
+    ports:
+      - "5000:5000"           # Web UI
+      - "8554:8554"           # RTSP re-stream
+      - "8555:8555/tcp"       # WebRTC
+      - "8555:8555/udp"
+    volumes:
+      - ./frigate/config/config.yml:/config/config.yml
+      - ./frigate/storage:/media/frigate
+      - /etc/localtime:/etc/localtime:ro
+      # Coral USB TPU — descomentar si usás Coral
+      # - /dev/bus/usb:/dev/bus/usb
+    environment:
+      - FRIGATE_RTSP_PASSWORD=changeme   # variable usable en config.yml como {FRIGATE_RTSP_PASSWORD}
+    # GPU NVIDIA — descomentar si usás GPU para decodificación de video
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    depends_on:
+      - mosquitto
+      - codeproject-ai
+    networks:
+      - vms-net
+
+# ── Volúmenes ────────────────────────────────────────────────
+volumes:
+  codeproject-data:
+
+# ── Red interna ──────────────────────────────────────────────
+networks:
+  vms-net:
+    driver: bridge

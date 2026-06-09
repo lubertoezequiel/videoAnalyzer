@@ -1,0 +1,2 @@
+config/.jwt_secret
+mosquitto/data/mosquitto.db
