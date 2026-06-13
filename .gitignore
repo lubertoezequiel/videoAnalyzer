@@ -1,2 +1,7 @@
 config/.jwt_secret
 mosquitto/data/mosquitto.db
+
+# macOS
+.DS_Store
+**/.DS_Store
+.thumbnail
