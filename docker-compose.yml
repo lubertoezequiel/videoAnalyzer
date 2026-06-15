@@ -90,6 +90,34 @@ services:
     networks:
       - vms-net
 
+  # ── Central de monitoreo (dashboard web) ────────────────────
+  # Se suscribe a mosquitto por WebSocket y muestra eventos, snapshots
+  # y la alerta de pánico del tótem. http://localhost:8080
+  dashboard:
+    image: nginx:alpine
+    container_name: dashboard
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    volumes:
+      - ./dashboardApp:/usr/share/nginx/html:ro
+    networks:
+      - vms-net
+
+  # ── App del tótem (kiosko Galicia) ──────────────────────────
+  # Frontend del autoservicio. El botón de pánico publica MQTT por WS.
+  # http://localhost:8081
+  totem:
+    image: nginx:alpine
+    container_name: totem
+    restart: unless-stopped
+    ports:
+      - "8081:80"
+    volumes:
+      - ./totemApp:/usr/share/nginx/html:ro
+    networks:
+      - vms-net
+
 # ── Volúmenes ────────────────────────────────────────────────
 volumes:
   codeproject-data:

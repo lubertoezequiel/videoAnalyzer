@@ -1,5 +1,6 @@
 config/.jwt_secret
 mosquitto/data/mosquitto.db
+mosquitto/log/
 
 # macOS
 .DS_Store
