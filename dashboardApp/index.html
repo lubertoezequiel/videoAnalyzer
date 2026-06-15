@@ -79,7 +79,7 @@
   <div class="stats">
     <div class="stat"><div class="k">Eventos</div><div class="v" id="cEvents">0</div></div>
     <div class="stat"><div class="k">Imágenes</div><div class="v" id="cImages">0</div></div>
-    <div class="stat panic"><div class="k">Pánico</div><div class="v" id="cPanic">0</div></div>
+    <div class="stat panic"><div class="k">Alertas</div><div class="v" id="cPanic">0</div></div>
     <div class="stat"><div class="k">Mensajes</div><div class="v" id="cRaw">0</div></div>
   </div>
 
@@ -195,6 +195,25 @@
       prepend(feed, card);
     }
 
+    // ── Alerta de la app de cámara: persona en el piso / caída ──
+    function handleCameraAlert(topic, data) {
+      bump("panic", $("cPanic"));
+      var card = document.createElement("div");
+      card.className = "card panic active";
+      card.innerHTML =
+        '<div class="body">' +
+          '<div class="row1"><span class="badge panic">⚠️ Persona en el piso</span><span class="time"></span></div>' +
+          '<div class="title">Posible persona caída · ' + (data.camera || "cámara") + '</div>' +
+          '<div class="meta"></div>' +
+        '</div>';
+      card.querySelector(".time").textContent = data.time || fmtTime(data.ts);
+      var score = typeof data.score === "number" ? Math.round(data.score * 100) + "%" : "—";
+      card.querySelector(".meta").textContent =
+        "Detección por visión · confianza " + score + (data.ratio ? " · relación caja " + data.ratio : "");
+      prepend(feed, card);
+      alarm();
+    }
+
     // ── Snapshot de Frigate (imagen JPEG por MQTT) ──────────────
     function handleSnapshot(topic, payload) {
       // topic: frigate/<cam>/<obj>/snapshot
@@ -231,6 +250,8 @@
 
       if (/^totem\/[^/]+\/emergency$/.test(topic)) {
         try { handlePanic(topic, JSON.parse(text)); } catch (e) {}
+      } else if (/^camera\/[^/]+\/alert$/.test(topic)) {
+        try { handleCameraAlert(topic, JSON.parse(text)); } catch (e) {}
       } else if (topic === "frigate/events" || /^camera\/[^/]+\/events$/.test(topic)) {
         // Eventos de Frigate o de la app de cámara (misma forma {after:{...}}).
         try { handleFrigateEvent(JSON.parse(text)); } catch (e) {}

@@ -79,9 +79,14 @@
       </div>
       <div class="panel">
         <div class="row">
-          <div class="stat"><div class="k">Eventos enviados</div><div class="v" id="cEvents">0</div></div>
+          <div class="stat"><div class="k">Eventos</div><div class="v" id="cEvents">0</div></div>
           <div class="stat"><div class="k">Snapshots</div><div class="v" id="cSnaps">0</div></div>
+          <div class="stat"><div class="k">Alertas</div><div class="v" id="cAlerts" style="color:var(--red)">0</div></div>
         </div>
+      </div>
+      <div class="panel">
+        <h3>Señales enviadas a la central</h3>
+        <div id="sent"><div class="empty">Nada enviado todavía.</div></div>
       </div>
       <div class="panel">
         <h3>Configuración</h3>
@@ -100,8 +105,14 @@
     var video = $("video"), overlay = $("overlay"), ctx = overlay.getContext("2d");
     var client = null, model = null, stream = null, running = false;
     var present = {}; // label -> lastSeenTime (para detectar entrada/salida)
-    var counts = { events: 0, snaps: 0 };
+    var counts = { events: 0, snaps: 0, alerts: 0 };
     var snapCanvas = document.createElement("canvas");
+    // Estado para las dos señales nuevas:
+    var lyingSince = null, lyingAlerted = false; // persona acostada/caída
+    var lastPersonCount = 0, lastEnterTs = 0;     // entrada de persona nueva
+    var LYING_RATIO = 1.3;      // ancho/alto de la caja para considerar "acostado"
+    var LYING_SUSTAIN_MS = 1200; // tiene que mantenerse así para no dar falsos positivos
+    var ENTER_THROTTLE_MS = 1500;
 
     function cfg() {
       var qs = new URLSearchParams(location.search);
@@ -128,12 +139,42 @@
       client.on("close", function () { setStatus("err", "Desconectado"); });
       return client;
     }
+    function logSent(text, danger) {
+      var el = $("sent"); var e = el.querySelector(".empty"); if (e) e.remove();
+      var d = document.createElement("div"); d.className = "det";
+      d.innerHTML = '<span class="lab" style="' + (danger ? "color:var(--red)" : "") + '"></span><span class="sc"></span>';
+      d.children[0].textContent = text;
+      d.children[1].textContent = new Date().toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+      el.insertBefore(d, el.firstChild);
+      while (el.children.length > 12) el.removeChild(el.lastChild);
+    }
     function publishEvent(type, label, score) {
       if (!client) return;
       var c = cfg();
       var payload = JSON.stringify({ type: type, after: { camera: c.camId, label: label, score: score, start_time: nowSec() } });
       client.publish(c.topicBase + "/" + c.camId + "/events", payload, { qos: 0 });
       counts.events++; $("cEvents").textContent = counts.events;
+      logSent((type === "new" ? "▲ aparece " : type === "end" ? "▽ se va " : type + " ") + label);
+    }
+    // Señal de entrada de persona nueva (aumentó el conteo de personas).
+    function publishPersonEnter(score) {
+      if (!client) return;
+      var c = cfg();
+      var payload = JSON.stringify({ type: "new", after: { camera: c.camId, label: "person", score: score, start_time: nowSec(), reason: "person_enter" } });
+      client.publish(c.topicBase + "/" + c.camId + "/events", payload, { qos: 0 });
+      counts.events++; $("cEvents").textContent = counts.events;
+      logSent("👤 entró una persona");
+      publishSnapshot("person");
+    }
+    // Señal de alerta: persona en el piso / acostada.
+    function publishFallen(score, ratio) {
+      if (!client) return;
+      var c = cfg();
+      var payload = JSON.stringify({ type: "fallen", camera: c.camId, label: "person", score: score, ratio: Math.round(ratio * 100) / 100, ts: Date.now(), time: new Date().toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) });
+      client.publish(c.topicBase + "/" + c.camId + "/alert", payload, { qos: 1 });
+      counts.alerts++; $("cAlerts").textContent = counts.alerts;
+      logSent("⚠️ persona en el piso", true);
+      publishSnapshot("person");
     }
     function publishSnapshot(label) {
       if (!client || !video.videoWidth) return;
@@ -186,28 +227,55 @@
       var thr = cfg().thr;
       var preds = await model.detect(video);
       var now = Date.now(), seen = {};
-      // dibujar cajas + lista
+      var personCount = 0, personMaxScore = 0, lyingNow = false, lyingScore = 0, lyingRatio = 0;
+
       ctx.clearRect(0, 0, overlay.width, overlay.height);
       ctx.lineWidth = 3; ctx.font = "16px system-ui"; ctx.textBaseline = "top";
       var listed = [];
       preds.forEach(function (p) {
         if (p.score < thr) return;
         seen[p.class] = Math.max(seen[p.class] || 0, p.score);
-        var b = p.bbox;
-        ctx.strokeStyle = "#2ec16b"; ctx.strokeRect(b[0], b[1], b[2], b[3]);
-        ctx.fillStyle = "rgba(46,193,107,0.85)"; ctx.fillRect(b[0], b[1] - 20, ctx.measureText(p.class).width + 16, 20);
-        ctx.fillStyle = "#06210f"; ctx.fillText(p.class + " " + Math.round(p.score * 100) + "%", b[0] + 6, b[1] - 19);
-        listed.push(p);
+        var b = p.bbox; // [x, y, ancho, alto]
+        var isPerson = p.class === "person";
+        var ratio = b[3] > 0 ? b[2] / b[3] : 0; // ancho / alto
+        var lying = isPerson && ratio >= LYING_RATIO; // caja más ancha que alta → acostado
+        if (isPerson) { personCount++; personMaxScore = Math.max(personMaxScore, p.score); }
+        if (lying) { lyingNow = true; lyingScore = Math.max(lyingScore, p.score); lyingRatio = ratio; }
+
+        var color = lying ? "#ef4444" : "#2ec16b";
+        var tag = p.class + " " + Math.round(p.score * 100) + "%" + (lying ? " · ACOSTADO" : "");
+        ctx.strokeStyle = color; ctx.strokeRect(b[0], b[1], b[2], b[3]);
+        ctx.fillStyle = lying ? "rgba(239,68,68,0.9)" : "rgba(46,193,107,0.85)";
+        ctx.fillRect(b[0], b[1] - 20, ctx.measureText(tag).width + 16, 20);
+        ctx.fillStyle = lying ? "#fff" : "#06210f"; ctx.fillText(tag, b[0] + 6, b[1] - 19);
+        listed.push({ class: p.class + (lying ? " (acostado)" : ""), score: p.score });
       });
-      // transiciones: nueva aparición → evento + snapshot
+
+      // transición genérica por etiqueta: nueva aparición → evento + snapshot
       Object.keys(seen).forEach(function (label) {
         if (!present[label]) { publishEvent("new", label, seen[label]); publishSnapshot(label); }
         present[label] = now;
       });
-      // salida: no visto en 4s → evento "end"
       Object.keys(present).forEach(function (label) {
         if (!seen[label] && now - present[label] > 4000) { publishEvent("end", label, 0); delete present[label]; }
       });
+
+      // SEÑAL 1 — entró una persona nueva (subió el conteo de personas)
+      if (personCount > lastPersonCount && now - lastEnterTs > ENTER_THROTTLE_MS) {
+        publishPersonEnter(personMaxScore); lastEnterTs = now;
+      }
+      lastPersonCount = personCount;
+
+      // SEÑAL 2 — persona acostada/caída (sostenida para evitar falsos positivos)
+      if (lyingNow) {
+        if (lyingSince === null) lyingSince = now;
+        if (!lyingAlerted && now - lyingSince >= LYING_SUSTAIN_MS) {
+          publishFallen(lyingScore, lyingRatio); lyingAlerted = true;
+        }
+      } else {
+        lyingSince = null; lyingAlerted = false; // re-arma cuando se levanta
+      }
+
       renderDets(listed);
       setTimeout(loop, 500); // ~2 detecciones/seg
     }
@@ -224,6 +292,8 @@
     var qs = new URLSearchParams(location.search);
     if (qs.get("broker")) $("brokerUrl").value = qs.get("broker");
     if (qs.get("cam")) $("camId").value = qs.get("cam");
+    // Conecta al broker al cargar, así el estado de conexión se ve enseguida.
+    ensureMqtt();
   })();
   </script>
 </body>
