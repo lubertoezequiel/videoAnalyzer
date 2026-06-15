@@ -104,14 +104,14 @@
     var $ = function (id) { return document.getElementById(id); };
     var video = $("video"), overlay = $("overlay"), ctx = overlay.getContext("2d");
     var client = null, model = null, stream = null, running = false;
-    var present = {}; // label -> lastSeenTime (para detectar entrada/salida)
     var counts = { events: 0, snaps: 0, alerts: 0 };
     var snapCanvas = document.createElement("canvas");
-    // Estado para las dos señales nuevas:
-    var lyingSince = null, lyingAlerted = false; // persona acostada/caída
+    // Estado para las dos señales:
+    var lyingSince = null, lyingAlerted = false, lastLyingTs = 0; // persona caída
     var lastPersonCount = 0, lastEnterTs = 0;     // entrada de persona nueva
-    var LYING_RATIO = 1.3;      // ancho/alto de la caja para considerar "acostado"
-    var LYING_SUSTAIN_MS = 1200; // tiene que mantenerse así para no dar falsos positivos
+    var LYING_RATIO = 1.3;        // ancho/alto de la caja para considerar "caída"
+    var LYING_SUSTAIN_MS = 10000; // tiene que estar caída >10 s para alertar
+    var LYING_GRACE_MS = 1500;    // margen anti-parpadeo antes de re-armar
     var ENTER_THROTTLE_MS = 1500;
 
     function cfg() {
@@ -226,38 +226,28 @@
       if (!running || !model) return;
       var thr = cfg().thr;
       var preds = await model.detect(video);
-      var now = Date.now(), seen = {};
+      var now = Date.now();
       var personCount = 0, personMaxScore = 0, lyingNow = false, lyingScore = 0, lyingRatio = 0;
 
       ctx.clearRect(0, 0, overlay.width, overlay.height);
       ctx.lineWidth = 3; ctx.font = "16px system-ui"; ctx.textBaseline = "top";
       var listed = [];
       preds.forEach(function (p) {
-        if (p.score < thr) return;
-        seen[p.class] = Math.max(seen[p.class] || 0, p.score);
+        // Solo personas: ignoramos couch y el resto de clases COCO.
+        if (p.class !== "person" || p.score < thr) return;
         var b = p.bbox; // [x, y, ancho, alto]
-        var isPerson = p.class === "person";
         var ratio = b[3] > 0 ? b[2] / b[3] : 0; // ancho / alto
-        var lying = isPerson && ratio >= LYING_RATIO; // caja más ancha que alta → acostado
-        if (isPerson) { personCount++; personMaxScore = Math.max(personMaxScore, p.score); }
+        var lying = ratio >= LYING_RATIO; // caja más ancha que alta → caída
+        personCount++; personMaxScore = Math.max(personMaxScore, p.score);
         if (lying) { lyingNow = true; lyingScore = Math.max(lyingScore, p.score); lyingRatio = ratio; }
 
         var color = lying ? "#ef4444" : "#2ec16b";
-        var tag = p.class + " " + Math.round(p.score * 100) + "%" + (lying ? " · ACOSTADO" : "");
+        var tag = "person " + Math.round(p.score * 100) + "%" + (lying ? " · CAÍDA" : "");
         ctx.strokeStyle = color; ctx.strokeRect(b[0], b[1], b[2], b[3]);
         ctx.fillStyle = lying ? "rgba(239,68,68,0.9)" : "rgba(46,193,107,0.85)";
         ctx.fillRect(b[0], b[1] - 20, ctx.measureText(tag).width + 16, 20);
         ctx.fillStyle = lying ? "#fff" : "#06210f"; ctx.fillText(tag, b[0] + 6, b[1] - 19);
-        listed.push({ class: p.class + (lying ? " (acostado)" : ""), score: p.score });
-      });
-
-      // transición genérica por etiqueta: nueva aparición → evento + snapshot
-      Object.keys(seen).forEach(function (label) {
-        if (!present[label]) { publishEvent("new", label, seen[label]); publishSnapshot(label); }
-        present[label] = now;
-      });
-      Object.keys(present).forEach(function (label) {
-        if (!seen[label] && now - present[label] > 4000) { publishEvent("end", label, 0); delete present[label]; }
+        listed.push({ class: "person" + (lying ? " (caída)" : ""), score: p.score });
       });
 
       // SEÑAL 1 — entró una persona nueva (subió el conteo de personas)
@@ -266,13 +256,15 @@
       }
       lastPersonCount = personCount;
 
-      // SEÑAL 2 — persona acostada/caída (sostenida para evitar falsos positivos)
+      // SEÑAL 2 — persona caída: tiene que estar caída >10 s seguidos.
+      // El margen anti-parpadeo evita que un frame perdido reinicie el conteo.
       if (lyingNow) {
+        lastLyingTs = now;
         if (lyingSince === null) lyingSince = now;
         if (!lyingAlerted && now - lyingSince >= LYING_SUSTAIN_MS) {
           publishFallen(lyingScore, lyingRatio); lyingAlerted = true;
         }
-      } else {
+      } else if (lyingSince !== null && now - lastLyingTs > LYING_GRACE_MS) {
         lyingSince = null; lyingAlerted = false; // re-arma cuando se levanta
       }
 
