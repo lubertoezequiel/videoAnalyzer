@@ -221,7 +221,9 @@
 
     function onMessage(topic, payload) {
       // payload es Uint8Array. Para tópicos de imagen lo dejamos binario.
-      var isSnapshot = /^frigate\/[^/]+\/[^/]+\/snapshot$/.test(topic);
+      // Snapshots de Frigate (frigate/<cam>/<obj>/snapshot) o de la app de
+      // cámara del navegador (camera/<cam>/<obj>/snapshot).
+      var isSnapshot = /^(frigate|camera)\/[^/]+\/[^/]+\/snapshot$/.test(topic);
       if (isSnapshot) { rawLine(topic, "<imagen " + payload.length + " bytes>"); handleSnapshot(topic, payload); return; }
 
       var text = new TextDecoder().decode(payload);
@@ -229,7 +231,8 @@
 
       if (/^totem\/[^/]+\/emergency$/.test(topic)) {
         try { handlePanic(topic, JSON.parse(text)); } catch (e) {}
-      } else if (topic === "frigate/events") {
+      } else if (topic === "frigate/events" || /^camera\/[^/]+\/events$/.test(topic)) {
+        // Eventos de Frigate o de la app de cámara (misma forma {after:{...}}).
         try { handleFrigateEvent(JSON.parse(text)); } catch (e) {}
       }
     }
@@ -245,7 +248,7 @@
         setStatus("on", "Conectado");
         $("connectBtn").textContent = "Desconectar";
         $("connectBtn").className = "off";
-        client.subscribe(["totem/#", "frigate/#"], { qos: 0 });
+        client.subscribe(["totem/#", "frigate/#", "camera/#"], { qos: 0 });
       });
       client.on("reconnect", function () { setStatus("", "Reconectando…"); });
       client.on("error", function (e) { setStatus("err", "Error: " + (e && e.message || e)); });

@@ -1,5 +1,3 @@
-version: "3.9"
-
 # ─────────────────────────────────────────────────────────────
 # Stack: Frigate + CodeProject.AI + Mosquitto
 #
@@ -30,10 +28,15 @@ services:
       - vms-net
 
   # ── CodeProject.AI ──────────────────────────────────────────
+  # Parte del stack de video pesado. Opt-in: solo arranca con
+  #   docker compose --profile video-stack up -d
+  # (requiere host Linux con GPU NVIDIA). Por defecto NO se levanta,
+  # así el proyecto corre en cualquier SO sin GPU.
   codeproject-ai:
     image: codeproject/ai-server:gpu   # Cambiar a :cpu si no tenés GPU NVIDIA
     container_name: codeproject-ai
     restart: unless-stopped
+    profiles: ["video-stack"]
     ports:
       - "32168:32168"   # API REST (http://localhost:32168)
     volumes:
@@ -57,10 +60,14 @@ services:
       - vms-net
 
   # ── Frigate NVR ─────────────────────────────────────────────
+  # Parte del stack de video pesado. Opt-in con --profile video-stack
+  # (host Linux + cámara RTSP en la red). En Mac/Windows usá la app de
+  # cámara del navegador (cameraApp), que no necesita Frigate.
   frigate:
     image: ghcr.io/blakeblackshear/frigate:stable
     container_name: frigate
     restart: unless-stopped
+    profiles: ["video-stack"]
     privileged: true          # necesario para acceso a dispositivos hardware
     shm_size: "256mb"         # aumentar si tenés muchas cámaras (64mb por cámara aprox)
     ports:
@@ -115,6 +122,21 @@ services:
       - "8081:80"
     volumes:
       - ./totemApp:/usr/share/nginx/html:ro
+    networks:
+      - vms-net
+
+  # ── App de cámara (navegador) ───────────────────────────────
+  # Usa la webcam por getUserMedia + detección con TensorFlow.js y
+  # publica las situaciones a MQTT. Funciona en cualquier SO/cámara.
+  # http://localhost:8082
+  camera:
+    image: nginx:alpine
+    container_name: camera
+    restart: unless-stopped
+    ports:
+      - "8082:80"
+    volumes:
+      - ./cameraApp:/usr/share/nginx/html:ro
     networks:
       - vms-net
 
