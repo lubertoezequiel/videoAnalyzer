@@ -43,8 +43,15 @@ function App() {
     return new Date().toLocaleTimeString(t.locale, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   }
   function triggerPanic() {
-    setPanicInfo({ time: timeNow() });
+    const time = timeNow();
+    setPanicInfo({ time });
     setOverlay("panic");
+    // Envía la alerta de emergencia al broker MQTT (la ve la central de monitoreo).
+    if (window.TotemMQTT) window.TotemMQTT.publishPanic({ time });
+  }
+  function cancelPanic() {
+    if (window.TotemMQTT) window.TotemMQTT.publishCancel({ time: panicInfo.time });
+    setOverlay(null);
   }
   function triggerOperator() {
     setPanicInfo({ time: timeNow() });
@@ -85,7 +92,7 @@ function App() {
         <EmergencySlider t={t} onTrigger={triggerPanic} />
 
         {overlay === "panic" && (
-          <PanicOverlay t={t} info={panicInfo} onCancel={() => setOverlay(null)} />
+          <PanicOverlay t={t} info={panicInfo} onCancel={cancelPanic} />
         )}
         {overlay === "operator" && (
           <OperatorAlert t={t} info={panicInfo} onClose={() => setOverlay(null)} />
